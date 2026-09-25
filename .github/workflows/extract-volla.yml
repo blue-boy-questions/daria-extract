@@ -1,0 +1,67 @@
+name: Extract Volla-Zahedan porter vendor camera stack
+on: [workflow_dispatch]
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Free disk
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache || true
+        df -h /
+    - name: Install tools
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq p7zip-full erofs-utils android-sdk-libsparse-utils unzip
+        curl -sL -o /tmp/pd.tar.gz https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz
+        tar xzf /tmp/pd.tar.gz -C /tmp
+        sudo mv /tmp/payload-dumper-go /usr/local/bin/ 2>/dev/null || true
+        chmod +x /usr/local/bin/payload-dumper-go || true
+    - name: Download 7z parts
+      run: |
+        B="https://github.com/sajjad85gh/zahedan-vollaos-rom-porter/releases/download/stable-20260828"
+        curl -sL --retry 3 -o volla-algiz-stable.7z.001 "$B/volla-algiz-stable.7z.001"
+        curl -sL --retry 3 -o volla-algiz-stable.7z.002 "$B/volla-algiz-stable.7z.002"
+        ls -lh volla-algiz-stable.7z.00*
+    - name: Extract archive
+      run: |
+        7z x volla-algiz-stable.7z.001 -y
+        echo "=== archive contents ==="
+        find . -maxdepth 3 -type f \( -name '*.img' -o -name 'payload.bin' -o -name '*.zip' \) -printf '%s\t%p\n' | sort -nr | head -40
+    - name: Get vendor.img
+      run: |
+        set +e
+        if [ -f payload.bin ]; then payload-dumper-go -p vendor payload.bin; fi
+        VIMG=$(find . -name 'vendor.img' -o -name 'vendor_*.img' | head -1)
+        if [ -z "$VIMG" ] && [ -f super.img ]; then
+          simg2img super.img super.raw 2>/dev/null || cp super.img super.raw
+          which lpunpack && lpunpack super.raw ./ || true
+          VIMG=$(find . -name 'vendor.img' | head -1)
+        fi
+        echo "VIMG=$VIMG"
+        ls -lh "$VIMG"
+        echo "VIMG=$VIMG" >> "$GITHUB_ENV"
+    - name: Extract camera artifacts from vendor
+      run: |
+        set +e
+        IMG="$VIMG"
+        simg2img "$IMG" "$IMG.raw" 2>/dev/null && IMG="$IMG.raw"
+        mkdir -p src
+        if sudo mount -o ro "$IMG" src 2>/dev/null; then echo mounted;
+        else fsck.erofs --extract=src "$IMG" 2>/dev/null && echo erofs; fi
+        OUT=out; mkdir -p "$OUT/lib64/hw" "$OUT/bin/hw" "$OUT/etc"
+        for pat in 'libmtkcam*' 'libcam*' 'lib3a*' 'libcameracustom*' 'libmtkisp*' 'libcamera_metadata*' 'libfeatureio*'; do
+          find src -path '*lib64*' -name "$pat" -exec cp {} "$OUT/lib64/" \; 2>/dev/null
+        done
+        find src -path '*lib64/hw*' \( -name 'android.hardware.camera*' -o -name '*camera*mediatek*' \) -exec cp {} "$OUT/lib64/hw/" \; 2>/dev/null
+        find src -path '*bin/hw*' -name 'camerahalserver' -exec cp {} "$OUT/bin/hw/" \; 2>/dev/null
+        find src -path '*etc*' \( -iname '*camera*' -o -iname '*flash*' -o -iname 'pri_camera*' \) -type f 2>/dev/null | while read f; do
+          rel=${f#*etc/}; mkdir -p "$OUT/etc/$(dirname "$rel")"; cp "$f" "$OUT/etc/$rel" 2>/dev/null; done
+        (cd "$OUT" && find . -type f -exec sha256sum {} \; | sort -k2) > "$OUT/manifest.sha256"
+        find "$OUT" -type f -printf '%s\t%P\n' | sort -nr
+        du -sh "$OUT"
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: volla-porter-camera
+        path: out/**
