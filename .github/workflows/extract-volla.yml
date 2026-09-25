@@ -31,15 +31,18 @@ jobs:
     - name: Get vendor.img
       run: |
         set +e
-        if [ -f payload.bin ]; then payload-dumper-go -p vendor payload.bin; fi
-        VIMG=$(find . -name 'vendor.img' -o -name 'vendor_*.img' | head -1)
+        VIMG=$(find . -name 'vendor.img' | head -1)
         if [ -z "$VIMG" ] && [ -f super.img ]; then
+          echo "Unpacking super.img via python lpunpack"
+          pip3 install --quiet lpunpack 2>/dev/null
           simg2img super.img super.raw 2>/dev/null || cp super.img super.raw
-          which lpunpack && lpunpack super.raw ./ || true
+          python3 -m lpunpack --partition vendor super.raw ./ 2>/dev/null \
+            || python3 -c "import lpunpack,sys; lpunpack.unpack('super.raw','.')" 2>/dev/null \
+            || lpunpack super.raw ./ 2>/dev/null
           VIMG=$(find . -name 'vendor.img' | head -1)
         fi
         echo "VIMG=$VIMG"
-        ls -lh "$VIMG"
+        ls -lh "$VIMG" 2>/dev/null
         echo "VIMG=$VIMG" >> "$GITHUB_ENV"
     - name: Extract camera artifacts from vendor
       run: |
