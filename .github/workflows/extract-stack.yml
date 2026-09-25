@@ -1,0 +1,105 @@
+name: Extract Daria camera stack + app
+on: [workflow_dispatch]
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Free up disk
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache || true
+        df -h /
+
+    - name: Install tools
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq unzip python3-pip erofs-utils android-sdk-libsparse-utils
+        curl -sL -o /tmp/pd.tar.gz https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz
+        tar xzf /tmp/pd.tar.gz -C /tmp
+        sudo mv /tmp/payload-dumper-go /usr/local/bin/ 2>/dev/null || true
+        chmod +x /usr/local/bin/payload-dumper-go || true
+
+    - name: Download ROM
+      run: |
+        URL="https://api.dariaos.com/ota/download/DariaOS-6.0-20250922-RELEASE-zahedan-V6.7.2.0.BOND-user-signed.zip"
+        curl -sL --retry 3 -o rom.zip "$URL"
+        ls -lh rom.zip
+        unzip -l rom.zip | head -40
+
+    - name: Extract partitions (vendor + product + system_ext + system)
+      run: |
+        set -e
+        if unzip -l rom.zip | grep -q 'payload.bin'; then
+          unzip -o rom.zip payload.bin
+          for p in vendor product system_ext system; do
+            echo "== dumping $p =="
+            payload-dumper-go -p "$p" payload.bin || echo "  ($p not in payload)"
+          done
+          find . -name '*.img' -printf '%s\t%p\n'
+        else
+          unzip -o rom.zip '*.img'
+          # split super if present
+          if [ -f super.img ]; then
+            sudo apt-get install -y -qq android-tools-fsutils || true
+            simg2img super.img super.raw 2>/dev/null || cp super.img super.raw
+            which lpunpack && lpunpack super.raw ./ || true
+          fi
+        fi
+
+    - name: Mount/extract each partition and collect camera artifacts
+      run: |
+        set +e
+        OUT=out; mkdir -p "$OUT"
+        extract_img() {
+          IMG="$1"; NAME="$2"
+          [ -f "$IMG" ] || return 0
+          echo "=== extracting $NAME from $IMG ==="
+          DST="ex_$NAME"; mkdir -p "$DST"
+          # raw (unsparse) if needed
+          simg2img "$IMG" "$IMG.raw" 2>/dev/null && IMG="$IMG.raw"
+          if sudo mount -o ro "$IMG" "$DST" 2>/dev/null; then echo "mounted ext4 $NAME";
+          else fsck.erofs --extract="$DST" "$IMG" 2>/dev/null && echo "erofs extracted $NAME"; fi
+        }
+        for p in vendor product system_ext system; do
+          IMG=$(find . -maxdepth 2 -name "$p.img" -o -name "$p.img.raw" | head -1)
+          extract_img "$IMG" "$p"
+        done
+
+        # 1) full vendor camera stack
+        mkdir -p "$OUT/vendor/lib64/hw" "$OUT/vendor/bin/hw" "$OUT/vendor/etc"
+        VSRC=$(ls -d ex_vendor 2>/dev/null)
+        if [ -n "$VSRC" ]; then
+          for pat in 'libmtkcam*' 'libcam*' 'lib3a*' 'libcameracustom*' 'libmtkisp*' 'libfeatureio*' 'libmtkcam_hal*'; do
+            find "$VSRC" -path '*lib64*' -name "$pat" -exec cp {} "$OUT/vendor/lib64/" \; 2>/dev/null
+          done
+          find "$VSRC" -path '*lib64/hw*' \( -name 'android.hardware.camera*' -o -name '*mediatek*' \) -exec cp {} "$OUT/vendor/lib64/hw/" \; 2>/dev/null
+          find "$VSRC" -path '*bin/hw*' -name 'camerahalserver' -exec cp {} "$OUT/vendor/bin/hw/" \; 2>/dev/null
+          find "$VSRC" -path '*etc*' \( -iname '*camera*' -o -iname '*flash*' \) -type f 2>/dev/null | while read f; do
+            rel=${f#*etc/}; mkdir -p "$OUT/vendor/etc/$(dirname "$rel")"; cp "$f" "$OUT/vendor/etc/$rel" 2>/dev/null; done
+        fi
+
+        # 2) camera APP (search product / system_ext / system)
+        mkdir -p "$OUT/apps"
+        for s in ex_product ex_system_ext ex_system; do
+          [ -d "$s" ] || continue
+          find "$s" -type d \( -iname '*camera*' -o -iname '*Camera*' \) 2>/dev/null | while read d; do
+            apk=$(find "$d" -maxdepth 1 -name '*.apk' | head -1)
+            [ -n "$apk" ] && cp "$apk" "$OUT/apps/$(basename $d).apk" 2>/dev/null && echo "app: $(basename $d)"
+          done
+        done
+
+        # 3) manifest with sizes + sha256
+        echo "== building manifest =="
+        (cd "$OUT" && find . -type f -exec sha256sum {} \; | sort -k2) > manifest.sha256
+        find "$OUT" -type f -printf '%s\t%P\n' | sort -nr > "$OUT/filelist.txt"
+        echo "=== collected ==="
+        cat "$OUT/filelist.txt"
+        du -sh "$OUT"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: daria-camera-stack
+        path: |
+          out/**
+          out/manifest.sha256
