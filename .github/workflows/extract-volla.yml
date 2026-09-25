@@ -33,12 +33,16 @@ jobs:
         set +e
         VIMG=$(find . -name 'vendor.img' | head -1)
         if [ -z "$VIMG" ] && [ -f super.img ]; then
-          echo "Unpacking super.img via python lpunpack"
-          pip3 install --quiet lpunpack 2>/dev/null
-          simg2img super.img super.raw 2>/dev/null || cp super.img super.raw
-          python3 -m lpunpack --partition vendor super.raw ./ 2>/dev/null \
-            || python3 -c "import lpunpack,sys; lpunpack.unpack('super.raw','.')" 2>/dev/null \
-            || lpunpack super.raw ./ 2>/dev/null
+          echo "== super.img present, size: $(ls -l super.img | awk '{print $5}') =="
+          simg2img super.img super.raw 2>/dev/null && echo "simg2img ok" || cp super.img super.raw
+          echo "== fetching unix3dgforce lpunpack =="
+          git clone --depth 1 https://github.com/unix3dgforce/lpunpack.git /tmp/lp 2>&1 | tail -2
+          echo "== listing partitions in super =="
+          python3 /tmp/lp/lpunpack.py --list super.raw 2>&1 | head -40
+          echo "== extracting vendor =="
+          python3 /tmp/lp/lpunpack.py --partition vendor super.raw ./ 2>&1 | tail -10
+          VIMG=$(find . -name 'vendor.img' | head -1)
+          [ -z "$VIMG" ] && echo "!! vendor extraction FAILED" && python3 /tmp/lp/lpunpack.py super.raw ./ 2>&1 | tail -10
           VIMG=$(find . -name 'vendor.img' | head -1)
         fi
         echo "VIMG=$VIMG"
