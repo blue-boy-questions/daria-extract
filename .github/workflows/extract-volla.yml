@@ -31,19 +31,19 @@ jobs:
     - name: Get vendor.img
       run: |
         set +e
-        VIMG=$(find . -name 'vendor.img' | head -1)
+        VIMG=$(find . -name 'vendor.img' -o -name 'vendor_a.img' | head -1)
         if [ -z "$VIMG" ] && [ -f super.img ]; then
           echo "== super.img present, size: $(ls -l super.img | awk '{print $5}') =="
           simg2img super.img super.raw 2>/dev/null && echo "simg2img ok" || cp super.img super.raw
-          echo "== fetching unix3dgforce lpunpack =="
-          git clone --depth 1 https://github.com/unix3dgforce/lpunpack.git /tmp/lp 2>&1 | tail -2
-          echo "== listing partitions in super =="
-          python3 /tmp/lp/lpunpack.py --list super.raw 2>&1 | head -40
-          echo "== extracting vendor =="
-          python3 /tmp/lp/lpunpack.py --partition vendor super.raw ./ 2>&1 | tail -10
-          VIMG=$(find . -name 'vendor.img' | head -1)
-          [ -z "$VIMG" ] && echo "!! vendor extraction FAILED" && python3 /tmp/lp/lpunpack.py super.raw ./ 2>&1 | tail -10
-          VIMG=$(find . -name 'vendor.img' | head -1)
+          git clone --depth 1 https://github.com/unix3dgforce/lpunpack.git /tmp/lp 2>&1 | tail -1
+          echo "== extracting vendor_a =="
+          python3 /tmp/lp/lpunpack.py --partition vendor_a super.raw ./ 2>&1 | tail -5
+          VIMG=$(find . -name 'vendor_a.img' -o -name 'vendor.img' | head -1)
+          if [ -z "$VIMG" ]; then
+            echo "== fallback: extract all =="
+            python3 /tmp/lp/lpunpack.py super.raw ./ 2>&1 | tail -15
+            VIMG=$(find . -name 'vendor_a.img' -o -name 'vendor.img' | head -1)
+          fi
         fi
         echo "VIMG=$VIMG"
         ls -lh "$VIMG" 2>/dev/null
